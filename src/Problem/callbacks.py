@@ -1,10 +1,10 @@
 from gurobipy import GRB, quicksum
-from solve_dual_subproblem import solve_dual_subproblem
-from dual_train import train_value
+from Problem.subproblem_dual import solve_dual_subproblem
+from Dual_Prediction.Dual_prediction_trainer import train_feasible_predictor
 from config import *
 import numpy as np
 
-class Callback: # problem_type: str, data, subproblem_idx: int, first_stage_values
+class Callback:
     def __init__(self, problem_type, data, first_stage_values, theta_vars, selected_subproblems, feature_vectors,
                  prediction_method=PREDICTION_METHOD, n_neighbors=N_NEIGHBORS, use_prediction=USE_PREDICTION):
         self.problem_type = problem_type
@@ -34,6 +34,7 @@ class Callback: # problem_type: str, data, subproblem_idx: int, first_stage_valu
             cuts_added_ml = False
             cuts_added_unselected = False
 
+            # Step 1: Solve selected subproblems
             for s in self.selected_subproblems:
                 obj, duals = solve_dual_subproblem(self.problem_type, self.data, s, first_stage_values)
                 dual_cache[s] = duals
@@ -42,21 +43,29 @@ class Callback: # problem_type: str, data, subproblem_idx: int, first_stage_valu
                     self.num_cuts_mip_selected[s] += 1
                     cuts_added_selected = True
 
+            # Step 2: Train prediction model and apply if enabled
             if self.use_prediction:
-                self.trained_models = train_value(dual_cache, self.feature_vectors,
-                                                  method=self.prediction_method,
-                                                  n_neighbors=self.n_neighbors)
+                self.trained_models = train_feasible_predictor(self.problem_type, self.data, dual_cache, self.feature_vectors)
 
                 unselected = set(self.data.S) - self.selected_subproblems
-                predicted = self.predict_duals(unselected)
 
-                for s in unselected:
-                    duals = predicted[s]
-                    pred_obj = self.compute_dual_obj(duals, s, first_stage_values)
-                    if pred_obj > theta_val[s]:
-                        self.add_optimality_cut(mod, duals, s, first_stage_values)
-                        self.num_cuts_mip_ml[s] += 1
-                        cuts_added_ml = True
+                if self.trained_models is not None:
+                    predicted = self.predict_duals(unselected)
+                    for s in unselected:
+                        duals = predicted[s]
+                        pred_obj = self.compute_dual_obj(duals, s, first_stage_values)
+                        if pred_obj > theta_val[s]:
+                            self.add_optimality_cut(mod, duals, s, first_stage_values)
+                            self.num_cuts_mip_ml[s] += 1
+                            cuts_added_ml = True
+                else:
+                    # fallback: directly solve subproblems if training failed
+                    for s in unselected:
+                        obj, duals = solve_dual_subproblem(self.problem_type, self.data, s, first_stage_values)
+                        if obj > theta_val[s]:
+                            self.add_optimality_cut(mod, duals, s, first_stage_values)
+                            self.num_cuts_mip_unselected[s] += 1
+                            cuts_added_unselected = True
             else:
                 for s in set(self.data.S) - self.selected_subproblems:
                     obj, duals = solve_dual_subproblem(self.problem_type, self.data, s, first_stage_values)
@@ -65,6 +74,7 @@ class Callback: # problem_type: str, data, subproblem_idx: int, first_stage_valu
                         self.num_cuts_mip_unselected[s] += 1
                         cuts_added_unselected = True
 
+            # Optional: fallback if no cuts were added
             if SOLVE_UNSELECTED_IF_NO_CUTS and self.use_prediction and not cuts_added_selected and not cuts_added_ml:
                 for s in set(self.data.S) - self.selected_subproblems:
                     obj, duals = solve_dual_subproblem(self.problem_type, self.data, s, first_stage_values)
@@ -81,7 +91,8 @@ class Callback: # problem_type: str, data, subproblem_idx: int, first_stage_valu
         for s in unselected_subproblems:
             X = np.array([self.feature_vectors[s]])
             predicted[s] = {
-                key: model.predict(X).flatten() for key, model in self.trained_models.items()
+                key: (np.dot(weight_vec, X.flatten()) if key == "lambda" else {j: np.dot(w_j, X.flatten()) for j, w_j in weight_vec.items()})
+                for key, weight_vec in self.trained_models.items()
             }
         return predicted
 

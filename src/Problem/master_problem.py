@@ -18,8 +18,8 @@ class Solution:
     num_cuts_rel_unselected: dict
     num_bnb_nodes: int = 0
 
-def _set_params(mod: Model):
-    mod.Params.LazyConstraints = 1
+def _set_params(mod: Model): # sets Gurobi solver parameters for the optimization model. 
+    mod.Params.LazyConstraints = 1 # Enable lazy constraints. These constraints are not added to the model up front, but are instead added dynamically during the branch-and-bound process (typically via a callback).
     # mod.Params.TimeLimit = 60.0
 
 def solve_master_problem(problem_type, data, selected_subproblems, feature_vectors,
