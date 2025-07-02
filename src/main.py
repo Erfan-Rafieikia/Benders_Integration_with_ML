@@ -4,6 +4,7 @@ import time
 from feature_engineering.generate_first_stage_trial import generate_scenario_features
 from Problem.master_problem import solve_master_problem
 from Problem.data import read_problem_data
+import pandas as pd
 
 """
 This script executes a three-step workflow:
@@ -37,8 +38,8 @@ PROBLEM_INSTANCES = {
 }
 
 # Feature generation parameters
-n_trials = 30
-binary_fraction = 0.3
+n_trials = 30 # Number of trial values for first-stage variables to generate for each instance
+binary_fraction = 0.3 # Fraction of trials that will be binary vectors
 seed = 42
 n_walks = 20
 walk_length = 10
@@ -64,15 +65,35 @@ for problem_class, instance_list in PROBLEM_INSTANCES.items(): # Iterate over ea
             continue # If the instance file does not exist, skip to the next iteration
 
         # Read data
-        data = read_problem_data(problem_class, instance_path)# Read the problem data from the specified instance file using the read_problem_data function defined in data.py using the created path instance_path. Takes the problem class as argument since reading files depedens on the problem class. Returns an instance of the problem class with the read data.
+        data = read_problem_data(problem_class, instance_path)# Read the problem data from the specified instance file using the read_problem_data function defined in data.py using the created path instance_path. Takes the problem class as argument since reading files depedens on the problem class.
+        #Returns an instance of the problem class with the read data.
 
         # Generate scenario features
-        print(f"Generating features for {problem_class} instance {instance_filename}")
-        start_time = time.time() # Start timer for feature generation for the current instance
-        feature_vectors = generate_scenario_features(
-            data, problem_class, n_trials, binary_fraction, seed,
-            n_walks, walk_length, feature_dim, window, min_count, sg
-        ) 
+        start_time = time.time() # Start the timer to measure feature generation time
+        feature_output = generate_scenario_features(
+        data, problem_class, n_trials, binary_fraction, seed,
+        n_walks, walk_length, feature_dim, window, min_count, sg
+        )  # Generate scenario features using the generate_scenario_features function defined in generate_first_stage_trial.py. Takes the problem class as argument since feature generation depedens on the problem class and it's mathemtical formulation.
+        # Unpack feature output
+        feature_vectors = feature_output["features"]
+        x_trials = feature_output["x_trials"]
+        params = feature_output["params"]
+
+        # Create DataFrames
+        df_features = pd.DataFrame.from_dict(feature_vectors, orient="index")
+        df_features.index.name = "scenario_id"
+
+        df_trials = pd.DataFrame(x_trials)
+        df_trials.index.name = "trial_id"
+
+        df_params = pd.DataFrame(params.items(), columns=["Parameter", "Value"])
+
+        # Save to Excel
+        excel_path = os.path.join(FEATURES_ROOT, f"features_{problem_class}_{instance_filename}.xlsx")
+        with pd.ExcelWriter(excel_path) as writer:
+            df_features.to_excel(writer, sheet_name="Scenario Features")
+            df_trials.to_excel(writer, sheet_name="First-Stage Trials")
+            df_params.to_excel(writer, sheet_name="Parameters")
         feature_gen_time = time.time() - start_time # Calculate the time taken for feature generation for the current instance
         print(f"Feature generation took {feature_gen_time:.2f} seconds")
 

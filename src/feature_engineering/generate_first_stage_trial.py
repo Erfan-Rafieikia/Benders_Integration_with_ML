@@ -81,7 +81,7 @@ def get_dual_vectors(x_trials: np.ndarray, data, problem_type: str):
                 )
                 mu_vec = np.array([mu_dict[j] for j in data.F])
                 dual_vec = np.concatenate(([lambda_val], mu_vec))  # Include lambda at the front
-                duals[(trial_idx, subproblem_dual_idx)] = dual_vec
+                duals[(trial_idx, subproblem_dual_idx)] = dual_vec #Mapping from (trial index, subproblem index) to dual vector. So, it inludes optimal dual variables for each trial and each subproblem (customer in UFL).
 
     else:
         raise NotImplementedError(f"{problem_type} not yet implemented")
@@ -90,57 +90,120 @@ def get_dual_vectors(x_trials: np.ndarray, data, problem_type: str):
 
 
 
-def dual_distance(dual_1, dual_2):
+def compute_scenario_weights(duals):
     """
-    Normalized Euclidean distance between two dual vectors.
+    Computes the average normalized Euclidean distance between all pairs of scenarios (subproblems)
+    based on their dual variable vectors across all sampled trials.
+
+    Each dual vector corresponds to a specific trial and scenario combination:
+        duals[(trial_idx, scenario_idx)] → np.ndarray (dual vector, e.g., [lambda, mu_1, mu_2, ..., mu_J] in case of UFL)
+
+    The result is a symmetric similarity matrix (dict), where:
+        weights[(s1, s2)] = average distance between subproblems s1 and s2 over all trials.
+
+    Scenarios with similar dual behavior will have smaller distances.
+    This is useful for building a scenario similarity graph or clustering.
+
+    Args:
+        duals (dict): Mapping from (trial index, scenario index) to dual vector (NumPy array).
+
+    Returns:
+        dict: Mapping from (scenario1, scenario2) to average normalized distance.
     """
-    norm = np.linalg.norm(dual_1) + np.linalg.norm(dual_2)
-    return np.linalg.norm(dual_1 - dual_2) / norm if norm > 0 else 0
+    weights = {}  # Final dictionary of pairwise distances between scenarios
+
+    # Get all unique scenario IDs from duals, e.g., {0, 1, 2}
+    scenario_ids = sorted({scenario for (_, scenario) in duals}) 
+
+    # Get all unique trial indices, e.g., {0, 1, ..., n_trials - 1}
+    trial_ids = sorted({trial for (trial, _) in duals})
+
+    # Loop over unique pairs of scenarios (avoid repeats)
+    for i, s1 in enumerate(scenario_ids): 
+        for s2 in scenario_ids[i + 1:]:
+            total = 0   # Sum of distances over all trials
+            count = 0   # Count of valid trial comparisons
+
+            # Loop over all trials to compare s1 and s2
+            for t in trial_ids:
+                d1 = duals.get((t, s1))  # Dual vector for scenario s1 at trial t
+                d2 = duals.get((t, s2))  # Dual vector for scenario s2 at trial t
+
+                if d1 is not None and d2 is not None:
+                    # Calculate normalized Euclidean distance between d1 and d2
+                    # Example: d1 = [1, 2], d2 = [2, 4] → norm = 5.38, dist = 0.37
+                    norm = np.linalg.norm(d1) + np.linalg.norm(d2)
+                    dist = np.linalg.norm(d1 - d2) / norm if norm > 0 else 0
+
+                    total += dist  # Accumulate distance
+                    count += 1     # Count valid comparisons
+
+            # Compute average distance for this scenario pair
+            avg_dist = total / count if count > 0 else 0
+
+            # Store both (s1, s2) and (s2, s1) to make the graph symmetric
+            weights[(s1, s2)] = avg_dist
+            weights[(s2, s1)] = avg_dist
+
+    return weights  # Dictionary of average pairwise distances
 
 
-def compute_scenario_weights(duals, x_trials, M):
+def generate_random_walks(weights, n_walks, walk_length, seed):
     """
-    Compute average dual distances between all pairs of scenarios.
-    """
-    weights = {}
-    for m1, m2 in product(M, M):
-        if m1 == m2:
-            continue
-        total = 0
-        for i in range(len(x_trials)):
-            d1 = duals.get((i, m1))
-            d2 = duals.get((i, m2))
-            if d1 is not None and d2 is not None:
-                total += dual_distance(d1, d2)
-        weights[(m1, m2)] = total / len(x_trials)
-    return weights
+    Simulate biased random walks over a scenario similarity graph defined by `weights`.
 
+    Each walk starts from a node (scenario), and moves to neighbors with probabilities 
+    proportional to edge weights (i.e., similarity/distance).
 
-def generate_random_walks(weights, M, n_walks, walk_length, seed):
-    """
-    Simulate biased random walks over the scenario similarity graph.
+    Args:
+        weights (dict): Dictionary of form {(s1, s2): weight} representing pairwise distances/similarities.
+        n_walks (int): Number of walks to generate *per node*.
+        walk_length (int): Number of steps in each walk.
+        seed (int): Random seed for reproducibility.
+
+    Returns:
+        list of list[str]: Each inner list is a walk (sequence of scenario indices as strings).
     """
     np.random.seed(seed)
     walks = []
+
+    # Extract all nodes (scenarios) from weight keys
+    nodes = sorted({s for s, _ in weights})
+
     for _ in range(n_walks):
-        for start in M:
+        for start in nodes:
             walk = [start]
             current = start
             for _ in range(walk_length):
+                # Get neighbors of the current node
                 neighbors = [t for (s, t) in weights if s == current]
                 if not neighbors:
                     break
+                # Get transition probabilities based on weights
                 probs = np.array([weights[(current, t)] for t in neighbors])
                 probs = probs / probs.sum()
+                # Choose next node based on biased probability
                 current = np.random.choice(neighbors, p=probs)
                 walk.append(current)
-            walks.append([str(s) for s in walk])
+            walks.append([str(s) for s in walk])  # Convert all nodes to strings for Word2Vec
     return walks
+
 
 
 def learn_embeddings(walks, feature_dim, window, min_count, sg):
     """
-    Train Word2Vec model over random walks and extract embeddings.
+    Train a Word2Vec model on random walks over the scenario graph,
+    learning continuous vector embeddings for each scenario.
+
+    Args:
+        walks (list[list[str]]): Random walks, each a list of scenario IDs as strings.
+        feature_dim (int): Dimensionality of the output embeddings.
+        window (int): Context window size for Word2Vec.
+        min_count (int): Minimum number of occurrences for a node to be embedded.
+        sg (int): Skip-gram (1) vs CBOW (0) model.
+
+    Returns:
+        dict[int, np.ndarray]: Mapping from scenario index to embedding vector.
     """
     model = Word2Vec(
         sentences=walks,
@@ -149,7 +212,7 @@ def learn_embeddings(walks, feature_dim, window, min_count, sg):
         min_count=min_count,
         sg=sg
     )
-    return {int(k): model.wv[k] for k in model.wv.index_to_key}
+    return {int(k): model.wv[k] for k in model.wv.index_to_key if k is not None}
 
 
 def generate_scenario_features(
@@ -159,14 +222,38 @@ def generate_scenario_features(
     feature_dim=8, window=5, min_count=1, sg=1
 ):
     """
-    Full pipeline: Generate first-stage samples, solve duals, build graph, embed scenarios.
+    End-to-end pipeline to generate scenario (subproblem) embeddings.
+
+    Steps:
+        1. Generate first-stage decision vectors (x_trials).
+        2. Solve all subproblem duals for each trial → get dual vectors.
+        3. Build a scenario similarity graph using average dual distances.
+        4. Generate random walks over this graph using weighted transitions.
+        5. Train a Word2Vec model over the walks to embed scenarios.
+
+    Returns:
+        dict[int, np.ndarray]: Mapping from scenario index to embedding vector.
     """
     x_trials = generate_first_stage_trials(n_trials, data, binary_fraction, seed, problem_type)
     duals = get_dual_vectors(x_trials, data, problem_type)
-    weights = compute_scenario_weights(duals, x_trials, list(data.M))
-    walks = generate_random_walks(weights, list(data.M), n_walks, walk_length, seed)
+    weights = compute_scenario_weights(duals)
+    walks = generate_random_walks(weights, n_walks, walk_length, seed)
     feature_vectors = learn_embeddings(walks, feature_dim, window, min_count, sg)
-    return feature_vectors
+    return {
+        "features": feature_vectors,
+        "x_trials": x_trials,
+        "params": {
+            "n_trials": n_trials,
+            "binary_fraction": binary_fraction,
+            "seed": seed,
+            "n_walks": n_walks,
+            "walk_length": walk_length,
+            "feature_dim": feature_dim,
+            "window": window,
+            "min_count": min_count,
+            "sg": sg
+        }
+    }
 
 
 
