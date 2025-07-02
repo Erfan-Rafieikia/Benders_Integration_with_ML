@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from config import *
+#from config import *
 from callbacks import Callback
 from data import UFLData, HUBData, CMNDData, MCFLData, SSLPData
 from gurobipy import GRB, Model, quicksum
@@ -23,10 +23,9 @@ def _set_params(mod: Model): # sets Gurobi solver parameters for the optimizatio
     # mod.Params.TimeLimit = 60.0
 
 def solve_master_problem(problem_type, data, selected_subproblems, feature_vectors,
-                         prediction_method=PREDICTION_METHOD,
-                         n_neighbors=N_NEIGHBORS,
-                         use_prediction=USE_PREDICTION):
-
+                         prediction_method='KNN',
+                         n_neighbors,
+                         use_prediction=True):
     if problem_type.upper() == "UFL":
         with Model("UFL_Master") as mod:
             _set_params(mod)
