@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-#from config import *
 from callbacks import Callback
 from data import UFLData, HUBData, CMNDData, MCFLData, SSLPData
 from gurobipy import GRB, Model, quicksum
 import numpy as np
+
+WRITE_MP_LP = False  # Set to True if you want to write the master problem LP file
 
 @dataclass
 class Solution:
@@ -23,8 +24,8 @@ def _set_params(mod: Model): # sets Gurobi solver parameters for the optimizatio
     # mod.Params.TimeLimit = 60.0
 
 def solve_master_problem(problem_type, data, selected_subproblems, feature_vectors,
-                         prediction_method='KNN',
                          n_neighbors,
+                         prediction_method='KNN',
                          use_prediction=True):
     if problem_type.upper() == "UFL":
         with Model("UFL_Master") as mod:
@@ -37,10 +38,10 @@ def solve_master_problem(problem_type, data, selected_subproblems, feature_vecto
                          quicksum(theta_vars[s] for s in data.S)
             mod.setObjective(total_cost, GRB.MINIMIZE)
 
-            mod.addConstr(
-                quicksum(data.u[j] * first_stage_values[j] for j in data.F) >= data.total_demand,
-                name="Feasibility"
-            )
+            #mod.addConstr(
+            #    quicksum(data.u[j] * first_stage_values[j] for j in data.F) >= data.total_demand,
+            #    name="Feasibility"
+            #)  # This constraint ensures that the total demand served by the facilities meets the overall demand. This is not required in uncapcitated UFL which we study given that only in that case, it can decomposed by customers
 
             callback = Callback(problem_type=problem_type,
                                 data=data,
@@ -52,7 +53,7 @@ def solve_master_problem(problem_type, data, selected_subproblems, feature_vecto
                                 n_neighbors=n_neighbors,
                                 use_prediction=use_prediction)
 
-            if WRITE_MP_LP:
+            if WRITE_MP_LP: # Write the master problem to a .lp file if True
                 mod.write(f"{mod.ModelName}.lp")
 
             mod.optimize(callback)

@@ -1,151 +1,160 @@
 import os
-import pickle
 import time
-from feature_engineering.generate_first_stage_trial import generate_scenario_features
-from Problem.master_problem import solve_master_problem
-from Problem.data import read_problem_data
+import json
+import numpy as np
 import pandas as pd
+from Problem.data import read_problem_data
+from feature_engineering.generate_first_stage_trial import generate_scenario_features
+from subproblem_selection.subproblem_selection import select_subproblems_based_on_features
+from Problem.master_problem import solve_master_problem
+from config import (
+    DATA_ROOT, FEATURES_ROOT, RESULTS_ROOT,
+    FEATURE_PARAMS, problem_classes_to_instances,
+    n_trials, binary_fraction,
+    subproblem_selection_method, n_selected_subproblems,prediction_method, n_neighbors, use_prediction
+)
 
-"""
-This script executes a three-step workflow:
+# ========== Prepare Output Directories ==========
+os.makedirs(FEATURES_ROOT, exist_ok=True)
+os.makedirs(RESULTS_ROOT, exist_ok=True)
+json_log_dir = os.path.join(FEATURES_ROOT, "detailed_logs")
+os.makedirs(json_log_dir, exist_ok=True)
 
-1. **Feature Generation**:
-   For specified problem classes and selected instance names,
-   it generates scenario-based feature vectors using dual sensitivity analysis and
-   random walk embeddings. These features are saved to disk for later use. Execution time
-   for feature generation is recorded for performance analysis.
+# ========== Logs ==========
+feature_logs = []
+solving_logs = []
 
-2. **Subproblem Selection** (placeholder):
-   Uses feature vectors to select a subset of subproblems/scenarios to train the dual prediction model.
-   This selection logic will be implemented via a separate function later.
-
-3. **Solving with Variant Benders Decomposition**:
-   Loads the features and selected subproblems to solve each instance using
-   Benders decomposition enhanced with ML-based dual predictions.
-"""
-
-# Configuration parameters
-DATA_ROOT = r"G:\My Drive\Programming\Research Projects\Benders_Integration_with_ML\DATA"
-FEATURES_ROOT = r"G:\My Drive\Programming\Research Projects\Benders_Integration_with_ML\FEATURES"
-
-# Specify problem classes and their respective instance files
-PROBLEM_INSTANCES = {
-    "UFL": ["MO1", "MO2"],
-    "HUB": [],
-    "CMND": [],
-    "MCFL": [],
-    "SSLP": []
-}
-
-# Feature generation parameters
-n_trials = 30 # Number of trial values for first-stage variables to generate for each instance
-binary_fraction = 0.3 # Fraction of trials that will be binary vectors
-seed = 42
-n_walks = 20
-walk_length = 10
-feature_dim = 8
-window = 5
-min_count = 1
-sg = 1
-
-# Prediction method parameters
-prediction_method = 'KNN'
-n_neighbors = 5
-use_prediction = True
-
-# Ensure features directory exists
-os.makedirs(FEATURES_ROOT, exist_ok=True) #create the FEATURES_ROOT directory if it does not exist. Parent directories will be created if they do not exist. If the directory already exists, it will not raise an error.
-
-# Step 1: Feature Generation
-for problem_class, instance_list in PROBLEM_INSTANCES.items(): # Iterate over each problem class and its instances
-    for instance_filename in instance_list: # Iterate over each instance filename in the list. instance_list is a list of instance filenames for the current problem class
-        instance_path = os.path.join(DATA_ROOT, problem_class, instance_filename) # Construct the full path to the instance file
-        if not os.path.exists(instance_path):
-            print(f"Instance {instance_filename} for {problem_class} not found, skipping.")
-            continue # If the instance file does not exist, skip to the next iteration
+# ========== STEP 1: Feature Generation + Subproblem Selection ==========
+for problem_class, instance_list in problem_classes_to_instances.items():
+    for instance_filename in instance_list:
+        instance_path = os.path.join(DATA_ROOT, problem_class, instance_filename)
+        print(f"\n🚀 STEP 1: Generating features for [{problem_class}] {instance_filename}...")
 
         # Read data
-        data = read_problem_data(problem_class, instance_path)# Read the problem data from the specified instance file using the read_problem_data function defined in data.py using the created path instance_path. Takes the problem class as argument since reading files depedens on the problem class.
-        #Returns an instance of the problem class with the read data.
-
-        # Generate scenario features
-        start_time = time.time() # Start the timer to measure feature generation time
-        feature_output = generate_scenario_features(
-        data, problem_class, n_trials, binary_fraction, seed,
-        n_walks, walk_length, feature_dim, window, min_count, sg
-        )  # Generate scenario features using the generate_scenario_features function defined in generate_first_stage_trial.py. Takes the problem class as argument since feature generation depedens on the problem class and it's mathemtical formulation.
-        # Unpack feature output
-        feature_vectors = feature_output["features"]
-        x_trials = feature_output["x_trials"]
-        params = feature_output["params"]
-
-        # Create DataFrames
-        df_features = pd.DataFrame.from_dict(feature_vectors, orient="index")
-        df_features.index.name = "scenario_id"
-
-        df_trials = pd.DataFrame(x_trials)
-        df_trials.index.name = "trial_id"
-
-        df_params = pd.DataFrame(params.items(), columns=["Parameter", "Value"])
-
-        # Save to Excel
-        excel_path = os.path.join(FEATURES_ROOT, f"features_{problem_class}_{instance_filename}.xlsx")
-        with pd.ExcelWriter(excel_path) as writer:
-            df_features.to_excel(writer, sheet_name="Scenario Features")
-            df_trials.to_excel(writer, sheet_name="First-Stage Trials")
-            df_params.to_excel(writer, sheet_name="Parameters")
-        feature_gen_time = time.time() - start_time # Calculate the time taken for feature generation for the current instance
-        print(f"Feature generation took {feature_gen_time:.2f} seconds")
-
-        # Save features
-        feature_file_path = os.path.join(FEATURES_ROOT, f"features_{problem_class}_{instance_filename}.pkl")
-        with open(feature_file_path, "wb") as f:
-            pickle.dump({"features": feature_vectors, "generation_time": feature_gen_time}, f)
-
-# Step 2: Placeholder for Subproblem Selection (to be implemented)
-def select_subproblems(feature_vectors, data):
-    """
-    Placeholder for scenario selection logic.
-    Should return a list of selected scenario indices.
-    """
-    selected_fraction = 0.2
-    num_selected = max(1, int(len(data.S) * selected_fraction))
-    return list(data.S[:num_selected])  # Dummy selection: first few scenarios
-
-# Step 3: Solve Instances
-for problem_class, instance_list in PROBLEM_INSTANCES.items():
-    for instance_filename in instance_list:
-        instance_path = os.path.join(DATA_ROOT, problem_class, 'O', instance_filename)
-        feature_file_path = os.path.join(FEATURES_ROOT, f"features_{problem_class}_{instance_filename}.pkl")
-
-        if not os.path.exists(instance_path):
-            print(f"Instance file {instance_filename} not found, skipping.")
-            continue
-        if not os.path.exists(feature_file_path):
-            print(f"Features file for {instance_filename} not found, skipping solving.")
-            continue
-
-        # Load problem data and features
         data = read_problem_data(problem_class, instance_path)
-        with open(feature_file_path, "rb") as f:
-            loaded_data = pickle.load(f)
-            feature_vectors = loaded_data["features"]
-            feature_gen_time = loaded_data["generation_time"]
 
-        # Step 2: Select subproblems
-        selected_subproblems = select_subproblems(feature_vectors, data)
-
-        # Solve with Benders
-        print(f"Solving {problem_class} instance {instance_filename}")
-        solution = solve_master_problem(
-            problem_class,
-            data,
-            selected_subproblems,
-            feature_vectors,
-            prediction_method=prediction_method,
-            n_neighbors=n_neighbors,
-            use_prediction=use_prediction
+        # Feature generation
+        t0 = time.time()
+        result = generate_scenario_features(
+            data=data,
+            problem_type=problem_class,
+            n_trials=n_trials,
+            binary_fraction=binary_fraction,
+            **FEATURE_PARAMS
         )
+        t_feat = time.time() - t0
 
-        print(f"Instance: {instance_filename}, Objective: {solution.objective_value}, "
-              f"Solution Time: {solution.solution_time}s, Feature Generation Time: {feature_gen_time:.2f}s")
+        features = result["features"]
+        x_trials = result["x_trials"]
+        params = result["params"]
+
+        # Subproblem selection
+        t1 = time.time()
+        selected, assignment = select_subproblems_based_on_features(
+            feature_vectors=features,
+            method=subproblem_selection_method,
+            p=n_selected_subproblems
+        )
+        t_sel = time.time() - t1
+
+        # Save everything to a JSON file
+        json_filename = f"{problem_class}_{instance_filename}_log.json"
+        json_path = os.path.join(json_log_dir, json_filename)
+        with open(json_path, "w") as f:
+            json.dump({
+                "problem_class": problem_class,
+                "instance_filename": instance_filename,
+                "x_trials": x_trials.tolist(),
+                "features": {str(k): v.tolist() for k, v in features.items()},
+                "feature_generation_params": params,
+                "feature_gen_time_sec": round(t_feat, 2),
+                "subproblem_selection_method": subproblem_selection_method,
+                "n_selected_subproblems": n_selected_subproblems,
+                "subproblem_selection_time_sec": round(t_sel, 2),
+                "selected_subproblems": selected,
+                "subproblem_assignment": assignment
+            }, f, indent=2)
+
+        # Log feature summary
+        feature_logs.append({
+            "problem_class": problem_class,
+            "instance_filename": instance_filename,
+            "feature_gen_time_sec": round(t_feat, 2),
+            "subproblem_selection_time_sec": round(t_sel, 2),
+            "n_trials": n_trials,
+            "binary_fraction": binary_fraction,
+            **params,
+            "n_selected_subproblems": n_selected_subproblems,
+            "selected_subproblems": selected
+        })
+
+# Save summary log for STEP 1
+feature_log_path = os.path.join(RESULTS_ROOT, "feature_subproblem_log.xlsx")
+pd.DataFrame(feature_logs).to_excel(feature_log_path, index=False)
+print(f"\n STEP 1 done: Feature logs saved to {feature_log_path}")
+print(f" JSON logs saved to: {json_log_dir}")
+
+# ========== STEP 2: Solving ==========
+for filename in os.listdir(json_log_dir):
+    if not filename.endswith(".json"):
+        continue
+
+    json_path = os.path.join(json_log_dir, filename)
+    with open(json_path, "r") as f:
+        log = json.load(f)
+
+    problem_class = log["problem_class"]
+    instance_filename = log["instance_filename"]
+    instance_path = os.path.join(DATA_ROOT, problem_class, instance_filename)
+
+    print(f"\n STEP 2: Solving [{problem_class}] {instance_filename}...")
+
+    #x_trials = np.array(log["x_trials"])
+    features = {int(k): np.array(v) for k, v in log["features"].items()}
+    selected = log["selected_subproblems"]
+    #assignment = log["subproblem_assignment"]
+
+    # Load problem data again
+    data = read_problem_data(problem_class, instance_path)
+
+    # Solve
+    t0 = time.time()
+    solution = solve_master_problem(
+        problem_type=problem_class,
+        data=data,
+        selected_subproblems=selected,
+        feature_vectors=features,
+        prediction_method=prediction_method,
+        n_neighbors=n_neighbors,
+        use_prediction=use_prediction
+)
+    t_sol = time.time() - t0
+
+    solving_logs.append({
+        "problem_class": problem_class,
+        "instance_filename": instance_filename,
+        "objective_value": round(solution.objective_value, 4),
+        "solution_time_sec": solution.solution_time,
+        "feature_gen_time_sec": log["feature_gen_time_sec"],
+        "subproblem_selection_time_sec": log["subproblem_selection_time_sec"],
+        "bnb_nodes": solution.num_bnb_nodes,
+
+        # Cuts - MIP Selected
+        "cuts_mip_selected": sum(solution.num_cuts_mip_selected.values()),
+        # Cuts - Relaxed Selected
+        "cuts_rel_selected": sum(solution.num_cuts_rel_selected.values()),
+        # Cuts - MIP ML
+        "cuts_mip_ml": sum(solution.num_cuts_mip_ml.values()),
+        # Cuts - Relaxed ML
+        "cuts_rel_ml": sum(solution.num_cuts_rel_ml.values()),
+        # Cuts - MIP Unselected
+        "cuts_mip_unselected": sum(solution.num_cuts_mip_unselected.values()),
+        # Cuts - Relaxed Unselected
+        "cuts_rel_unselected": sum(solution.num_cuts_rel_unselected.values())
+    })
+
+
+# Save final solving log
+solving_log_path = os.path.join(RESULTS_ROOT, "solution_log.xlsx")
+pd.DataFrame(solving_logs).to_excel(solving_log_path, index=False)
+print(f"\n✅ STEP 2 done: Final results saved to {solving_log_path}")
