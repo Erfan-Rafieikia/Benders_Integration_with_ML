@@ -3,11 +3,14 @@ import time
 import json
 import numpy as np
 import pandas as pd
-from Problem.data import read_problem_data
-from feature_engineering.generate_first_stage_trial import generate_scenario_features
-from subproblem_selection.subproblem_selection import select_subproblems_based_on_features
-from Problem.master_problem import solve_master_problem
-from config import (
+from .Problem.data import read_problem_data
+from .feature_engineering.generate_first_stage_trial import generate_scenario_features
+from .subproblem_selection.subproblem_selection import select_subproblems_based_on_features
+from .Problem.master_problem import solve_master_problem
+from .Problem.master_problem import Solution
+
+
+from .config import (
     DATA_ROOT, FEATURES_ROOT, RESULTS_ROOT,
     FEATURE_PARAMS, problem_classes_to_instances,
     n_trials, binary_fraction,
@@ -48,6 +51,9 @@ for problem_class, instance_list in problem_classes_to_instances.items():
         x_trials = result["x_trials"]
         params = result["params"]
 
+        print("Feature generation for instance [{}] and problem class [{}] completed in {:.2f} seconds.".format(
+            instance_filename, problem_class, t_feat))
+
         # Subproblem selection
         t1 = time.time()
         selected, assignment = select_subproblems_based_on_features(
@@ -55,7 +61,14 @@ for problem_class, instance_list in problem_classes_to_instances.items():
             method=subproblem_selection_method,
             p=n_selected_subproblems
         )
+        if (selected is None) or (not hasattr(selected, '__iter__')):
+            selected = []
+        if (assignment is None) or (not hasattr(assignment, '__iter__')):
+            assignment = []
         t_sel = time.time() - t1
+
+        print("Subproblem selection for instance [{}] and problem class [{}] completed in {:.2f} seconds.".format(
+            instance_filename, problem_class, t_sel))
 
         # Save everything to a JSON file
         json_filename = f"{problem_class}_{instance_filename}_log.json"
@@ -130,31 +143,48 @@ for filename in os.listdir(json_log_dir):
 )
     t_sol = time.time() - t0
 
-    solving_logs.append({
-        "problem_class": problem_class,
-        "instance_filename": instance_filename,
-        "objective_value": round(solution.objective_value, 4),
-        "solution_time_sec": solution.solution_time,
-        "feature_gen_time_sec": log["feature_gen_time_sec"],
-        "subproblem_selection_time_sec": log["subproblem_selection_time_sec"],
-        "bnb_nodes": solution.num_bnb_nodes,
+    if solution is not None:
+        solving_logs.append({
+            "problem_class": problem_class,
+            "instance_filename": instance_filename,
+            "objective_value": round(solution.objective_value, 4),
+            "solution_time_sec": solution.solution_time,
+            "feature_gen_time_sec": log["feature_gen_time_sec"],
+            "subproblem_selection_time_sec": log["subproblem_selection_time_sec"],
+            "bnb_nodes": solution.num_bnb_nodes,
 
-        # Cuts - MIP Selected
-        "cuts_mip_selected": sum(solution.num_cuts_mip_selected.values()),
-        # Cuts - Relaxed Selected
-        "cuts_rel_selected": sum(solution.num_cuts_rel_selected.values()),
-        # Cuts - MIP ML
-        "cuts_mip_ml": sum(solution.num_cuts_mip_ml.values()),
-        # Cuts - Relaxed ML
-        "cuts_rel_ml": sum(solution.num_cuts_rel_ml.values()),
-        # Cuts - MIP Unselected
-        "cuts_mip_unselected": sum(solution.num_cuts_mip_unselected.values()),
-        # Cuts - Relaxed Unselected
-        "cuts_rel_unselected": sum(solution.num_cuts_rel_unselected.values())
-    })
+            # Cuts - MIP Selected
+            "cuts_mip_selected": sum(solution.num_cuts_mip_selected.values()),
+            # Cuts - Relaxed Selected
+            "cuts_rel_selected": sum(solution.num_cuts_rel_selected.values()),
+            # Cuts - MIP ML
+            "cuts_mip_ml": sum(solution.num_cuts_mip_ml.values()),
+            # Cuts - Relaxed ML
+            "cuts_rel_ml": sum(solution.num_cuts_rel_ml.values()),
+            # Cuts - MIP Unselected
+            "cuts_mip_unselected": sum(solution.num_cuts_mip_unselected.values()),
+            # Cuts - Relaxed Unselected
+            "cuts_rel_unselected": sum(solution.num_cuts_rel_unselected.values())
+        })
+    else:
+        solving_logs.append({
+            "problem_class": problem_class,
+            "instance_filename": instance_filename,
+            "objective_value": None,
+            "solution_time_sec": None,
+            "feature_gen_time_sec": log["feature_gen_time_sec"],
+            "subproblem_selection_time_sec": log["subproblem_selection_time_sec"],
+            "bnb_nodes": None,
+            "cuts_mip_selected": None,
+            "cuts_rel_selected": None,
+            "cuts_mip_ml": None,
+            "cuts_rel_ml": None,
+            "cuts_mip_unselected": None,
+            "cuts_rel_unselected": None
+        })
 
 
 # Save final solving log
 solving_log_path = os.path.join(RESULTS_ROOT, "solution_log.xlsx")
 pd.DataFrame(solving_logs).to_excel(solving_log_path, index=False)
-print(f"\n✅ STEP 2 done: Final results saved to {solving_log_path}")
+print(f"\n STEP 2 done: Final results saved to {solving_log_path}")

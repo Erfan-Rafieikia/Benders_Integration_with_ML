@@ -1,6 +1,6 @@
 from dataclasses import dataclass
-from callbacks import Callback
-from data import UFLData, HUBData, CMNDData, MCFLData, SSLPData
+from .callbacks import Callback
+from .data import UFLData, HUBData, CMNDData, MCFLData, SSLPData
 from gurobipy import GRB, Model, quicksum
 import numpy as np
 

@@ -51,19 +51,35 @@ def read_ufl_data(file_path):
 
         d = []   # Customer demands
         c = []   # Shipment costs. element c[i][j] is the cost of serving customer i from facility j
-        for _ in range(n_customers): #Goes to line 1 + n_facilities +1 and reads the next n_customers lines including line  1 + n_facilities +1 
-            row = list(map(float, file.readline().split()))
-            d.append(row[0]) #Firt element of each line is the demand of the customer
-            c.append(row[1:]) # the rest are the costs to each facility
+        for _ in range(n_customers):
+            demand_line = file.readline()
+            cost_line = file.readline()
+
+            demand = float(demand_line.strip())
+            costs = list(map(float, cost_line.strip().split()))
+
+            if len(costs) != n_facilities:
+                raise ValueError(f"Expected {n_facilities} costs, got {len(costs)}")
+
+            d.append(demand)
+            c.append(costs)
 
     C = np.arange(n_customers)     # Customer indices . This gives [0, 1, ..., n_customers-1]
     F = np.arange(n_facilities)    # Facility indices. This gives [0, 1, ..., n_facilities-1]. For example, if there are 3 facilities, F will be [0, 1, 2]
     S = C.copy()                   # Each customer is its own scenario . This gives [0, 1, ..., n_customers-1]. Therefore, starting from 0, dpesn't cause concern when defining subproblem for that sccenario
 
-    d = np.array(d) #Shape (|C|,). d[i] is the demand of customer i. For example, if there are 5 customers, d will be an array of length 5 where d[i] is the demand of customer i.
-    u = np.array(u) #Shape (|F|,). u[j] is the capacity of facility j. For example, if there are 3 facilities, u will be an array of length 3 where u[j] is the capacity of facility j.
-    f = np.array(f) #Shape (|F|,). f[j] is the fixed cost of facility j. For example, if there are 3 facilities, f will be an array of length 3 where f[j] is the fixed cost of facility j.
-    c = np.array(c)  # shape (|C|, |F|). element c[i][j] is the cost of serving customer i from facility j. For example, if there are 5 customers and 3 facilities, c will be a 5x3 matrix where c[i][j] is the cost of serving customer i from facility j.
+    d = np.array(d,dtype=float) #Shape (|C|,). d[i] is the demand of customer i. For example, if there are 5 customers, d will be an array of length 5 where d[i] is the demand of customer i.
+    u = np.array(u,dtype=float) #Shape (|F|,). u[j] is the capacity of facility j. For example, if there are 3 facilities, u will be an array of length 3 where u[j] is the capacity of facility j.
+    f = np.array(f,dtype=float) #Shape (|F|,). f[j] is the fixed cost of facility j. For example, if there are 3 facilities, f will be an array of length 3 where f[j] is the fixed cost of facility j.
+    #c = np.array(c)  # shape (|C|, |F|). element c[i][j] is the cost of serving customer i from facility j. For example, if there are 5 customers and 3 facilities, c will be a 5x3 matrix where c[i][j] is the cost of serving customer i from facility j.
+    
+    # Validate cost matrix shape
+    for i, row in enumerate(c): # shape (|C|, |F|). element c[i][j] is the cost of serving customer i from facility j. For example, if there are 5 customers and 3 facilities, c will be a 5x3 matrix where c[i][j] is the cost of serving customer i from facility j.
+    # Validate cost matrix shape
+        if len(row) != n_facilities:
+            raise ValueError(f"Row {i} in cost matrix has {len(row)} entries, expected {n_facilities}")
+    c = np.array(c, dtype=float)  # Convert to numpy array. Shape (|C|, |F|). element c[i][j] is the cost of serving customer i from facility j. For example, if there are 5 customers and 3 facilities, c will be a 5x3 matrix where c[i][j] is the cost of serving customer i from facility j.
+
 
     total_demand = np.sum(d) # Total demand across all customers
     total_capacity = np.sum(u) # Total capacity across all facilities

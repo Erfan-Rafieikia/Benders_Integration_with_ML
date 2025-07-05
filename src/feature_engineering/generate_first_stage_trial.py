@@ -3,6 +3,7 @@ from itertools import product
 from gensim.models import Word2Vec
 from ..Problem.subproblem_dual import solve_dual_subproblem
 import numpy as np
+import time 
 
 def generate_first_stage_trials(n_trials, data, binary_fraction, seed, problem_type):
     """
@@ -43,13 +44,14 @@ def generate_first_stage_trials(n_trials, data, binary_fraction, seed, problem_t
 
         # Feasibility check
         if problem_type.upper() == "UFL":
-            pass # For UFL, we don't havce any constraints on the first-stage variables, so all generated vectors are feasible.
+            x_trials.append(x) # For UFL, we don't havce any constraints on the first-stage variables, so all generated vectors are feasible.
             #total_capacity = sum(data.capacities[j] * x[j] for j in range(num_vars))
             #if total_capacity >= data.total_demand - 1e-6:
             #   x_trials.append(x)
 
         # Add more problem classes as needed
         total_trials += 1  # Avoid infinite loop in case of tight feasibility
+        print(f"Generated {len(x_trials)} feasible first-stage solutions so far out of {n_trials} trials.")
 
     return np.array(x_trials) # Matrix of shape (n_trials, size of first-stage decision vector) where size of first-stage decision vector is |data.F| is the number of facilities in UFL.
 
@@ -110,6 +112,10 @@ def compute_scenario_weights(duals):
     Returns:
         dict: Mapping from (scenario1, scenario2) to average normalized distance.
     """
+    if duals is None:
+        raise ValueError("Input 'duals' is None. Cannot compute scenario weights.")
+        return {}
+
     weights = {}  # Final dictionary of pairwise distances between scenarios
 
     # Get all unique scenario IDs from duals, e.g., {0, 1, 2}
@@ -234,11 +240,32 @@ def generate_scenario_features(
     Returns:
         dict[int, np.ndarray]: Mapping from scenario index to embedding vector.
     """
+    start_time = time.time()
+    print("Starting feature generation for problem type [{}]...".format(problem_type))
+    # Step 1: Generate first-stage trials
     x_trials = generate_first_stage_trials(n_trials, data, binary_fraction, seed, problem_type)
+    feature_gen_time = time.time() - start_time
+    print("Generation of first-stage trials for problem type [{}] completed in {:.2f} seconds.".format(problem_type, feature_gen_time))
+    start_time = time.time()
+    # Step 2: Get dual vectors for each trial
     duals = get_dual_vectors(x_trials, data, problem_type)
+    duals_time = time.time() - start_time
+    print("Dual vectors for problem type [{}] generated in {:.2f} seconds.".format(problem_type, duals_time))   
+    # Step 3: Compute scenario weights based on dual vectors
+    start_time = time.time()
     weights = compute_scenario_weights(duals)
+    weights_time = time.time() - start_time
+    print("Scenario weights for problem type [{}] computed in {:.2f} seconds.".format(problem_type, weights_time))
+    # Step 4: Generate random walks over the scenario graph
+    start_time = time.time()
     walks = generate_random_walks(weights, n_walks, walk_length, seed)
+    walks_time = time.time() - start_time
+    print("Random walks for problem type [{}] generated in {:.2f} seconds.".format(problem_type, walks_time))
+    # Step 5: Learn embeddings from the random walks
+    start_time = time.time()
     feature_vectors = learn_embeddings(walks, feature_dim, window, min_count, sg)
+    embedding_time = time.time() - start_time
+    print("Embeddings for problem type [{}] learned in {:.2f} seconds.".format(problem_type, embedding_time))
     return {
         "features": feature_vectors,
         "x_trials": x_trials,

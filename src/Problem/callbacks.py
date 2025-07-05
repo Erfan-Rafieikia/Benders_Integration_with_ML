@@ -1,6 +1,6 @@
 from gurobipy import GRB, quicksum
-from Problem.subproblem_dual import solve_dual_subproblem
-from Dual_Prediction.Dual_prediction_trainer import train_feasible_predictor
+from .subproblem_dual import solve_dual_subproblem
+from ..Dual_Prediction.Dual_prediction_trainer import train_feasible_predictor
 import numpy as np
 
 class Callback:

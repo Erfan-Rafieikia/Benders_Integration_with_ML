@@ -1,5 +1,5 @@
 from gurobipy import GRB, Model, quicksum
-from data import UFLData, HUBData, CMNDData, MCFLData, SSLPData  # Placeholder types
+from .data import UFLData, HUBData, CMNDData, MCFLData, SSLPData  # Placeholder types
 import numpy as np
 
 
