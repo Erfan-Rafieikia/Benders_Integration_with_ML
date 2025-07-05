@@ -21,6 +21,10 @@ def train_feasible_predictor(problem_type, data, solved_duals, feature_vectors):
                       or None if no feasible solution is found
     """
 
+    if not feature_vectors:
+        print("[Warning] Empty feature_vectors received. Skipping training.")
+        return None
+
     problem_type = problem_type.upper()
 
     if problem_type == "UFL":

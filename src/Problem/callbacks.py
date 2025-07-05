@@ -2,25 +2,46 @@ from gurobipy import GRB, quicksum
 from .subproblem_dual import solve_dual_subproblem
 from ..Dual_Prediction.Dual_prediction_trainer import train_feasible_predictor
 import numpy as np
+from ..feature_engineering.generate_first_stage_trial import compute_scenario_features_from_duals
+from ..subproblem_selection.subproblem_selection import select_subproblems_based_on_features
 
 class Callback:
     def __init__(self, problem_type, data, first_stage_values, theta_vars,
-                 selected_subproblems, feature_vectors,
-                 prediction_method="REG",
-                 n_neighbors=5,
-                 use_prediction=True,
-                 fallback_method='solve'):
+             selected_subproblems=None, feature_vectors=None,
+             prediction_method="REG",
+             n_neighbors=5,
+             use_prediction=True,
+             fallback_method='solve',
+             n_trials=5,
+             feature_params=None,
+             n_selected_subproblems=None):
         self.problem_type = problem_type
         self.data = data
         self.first_stage_values = first_stage_values
-        self.theta = theta_vars #auxiliary variable for optimality cuts
-        self.selected_subproblems = set(selected_subproblems) # Set of selected subproblems for which we solve the dual
-        self.feature_vectors = feature_vectors # Feature vectors for each subproblem used in REG prediction
+        self.theta = theta_vars
+
+        # Learning-related config
         self.prediction_method = prediction_method
         self.n_neighbors = n_neighbors
         self.use_prediction = use_prediction
         self.fallback_method = fallback_method.lower()
-        self.trained_models = {}
+        self.n_selected_subproblems = n_selected_subproblems
+
+        # Number of iterations to run standard Benders
+        self.n_trials = n_trials
+        self.feature_params = feature_params or {}
+
+        # Internal states for learning
+        self.iteration = 0
+        self.x_trials = []                          # List of first-stage solutions
+        self.dual_vectors = {}                      # Dict[(trial_idx, scenario_idx)] → dual vector
+        self.features_computed = False              # Whether features were computed
+        self.trained_models = {}                    # For regression
+        self.feature_vectors = feature_vectors or {}
+        self.selected_subproblems = set(selected_subproblems or [])
+
+        # For KNN (filled after learning)
+        self.knn_neighbors = {}
 
         # Counters
         self.num_cuts_mip_selected = {s: 0 for s in data.S}
@@ -31,9 +52,112 @@ class Callback:
         self.num_cuts_rel_unselected = {s: 0 for s in data.S}
         self.num_fallback_used = 0
 
-        # Initialize KNN neighbors if using KNN prediction or fallback to avoid doing this on each iteration
-        if self.use_prediction and (self.prediction_method.upper() == "KNN" or self.fallback_method.upper() == "KNN"):
-            self.knn_neighbors = self.compute_knn_neighbors()
+
+    def __call__(self, mod, where):
+        print(f"Callback triggered at iteration {self.iteration}, where = {where}")
+        if where != GRB.Callback.MIPSOL:
+            return
+        
+        #Execute the follwing lines if Gurobi finds a new feasible integer solution during its optimization process.
+        self.iteration += 1
+        print(10*"***",self.iteration,10*"***") 
+        y_sol = mod.cbGetSolution(self.first_stage_values)
+        print(y_sol)
+        theta_val = mod.cbGetSolution(self.theta)
+
+        # === Phase 1: Run traditional Benders for the first n_trials iterations ===
+        if self.iteration <= self.n_trials:
+            if self.problem_type.upper() == "UFL":
+                for s in self.data.S:
+                    result = solve_dual_subproblem(self.problem_type, self.data, s, y_sol)
+                    duals = self.structure_duals(result)
+                    obj_val = self.compute_dual_obj(duals, s, y_sol)
+                    if obj_val > theta_val[s]:
+                        self.add_optimality_cut(mod, duals, s)
+                        self.num_cuts_mip_selected[s] += 1
+
+                    # Store dual vector for later feature generation
+                    dual_vec = np.concatenate([[duals["lambda"]], np.array([duals["mu"][j] for j in self.data.F])])
+                    self.dual_vectors[(self.iteration - 1, s)] = dual_vec
+                    print('[Debug] Stored dual vector for trial {} and subproblem {}: {}'.format(self.iteration - 1, s, dual_vec))
+
+                # Store current first-stage decision vector
+                x_vec = np.array([y_sol[j] for j in self.data.F])
+                self.x_trials.append(x_vec)
+            else:
+                pass  # TODO: Add traditional Benders logic for other problem types
+
+    # === Phase 2: Switch to ML-aided Benders ===
+        else:
+            if not self.features_computed:
+
+                # Compute features from collected duals
+                self.feature_vectors = compute_scenario_features_from_duals(self.dual_vectors, self.feature_params)
+                if self.feature_vectors is not None:
+                    print("Feature vectors were created successfully.")
+                    # You can also print the shape/dimensions/some values
+                else:
+                    print("Feature vectors were NOT created or are None.")
+                
+
+                # Select subproblems using a P-median heuristic
+                selected, _ = select_subproblems_based_on_features(
+                    feature_vectors=self.feature_vectors,
+                    method="p_median",
+                    p=self.n_selected_subproblems
+                )
+                if not selected:
+                    print("[Warning] No subproblems selected. ML prediction may not proceed.")
+                self.selected_subproblems = set(selected)
+
+                if self.prediction_method.upper() == "KNN":
+                    self.knn_neighbors = self.compute_knn_neighbors()
+
+                self.features_computed = True
+
+            # === Step 1: Solve selected subproblems ===
+            dual_cache = {}
+            if self.problem_type.upper() == "UFL":
+                for s in self.selected_subproblems:
+                    result = solve_dual_subproblem(self.problem_type, self.data, s, y_sol)
+                    duals = self.structure_duals(result)
+                    dual_cache[s] = duals
+                    obj_val = self.compute_dual_obj(duals, s, y_sol)
+                    if obj_val > theta_val[s]:
+                        self.add_optimality_cut(mod, duals, s)
+                        self.num_cuts_mip_selected[s] += 1
+            else:
+                pass  # TODO: Add logic for other problem types
+
+            # === Step 2: Predict for unselected subproblems ===
+            unselected = set(self.data.S) - self.selected_subproblems
+
+            if self.use_prediction:
+                if self.prediction_method.upper() == "REG":
+                    print(f"[Debug] Training model with {len(self.feature_vectors)} feature vectors")
+                    self.trained_models = train_feasible_predictor(self.problem_type, self.data, dual_cache, self.feature_vectors)
+                    if self.trained_models is None:
+                        self._handle_fallback(mod, unselected, y_sol, theta_val, dual_cache)
+                        self.num_fallback_used += 1
+                    else:
+                        predicted = self.predict_duals(unselected)
+                        for s in unselected:
+                            duals = predicted[s]
+                            obj_val = self.compute_dual_obj(duals, s, y_sol)
+                            if obj_val > theta_val[s]:
+                                self.add_optimality_cut(mod, duals, s)
+                                self.num_cuts_mip_ml[s] += 1
+
+                elif self.prediction_method.upper() == "KNN":
+                    predicted = self.knn_predict(unselected, dual_cache)
+                    for s in unselected:
+                        duals = predicted[s]
+                        obj_val = self.compute_dual_obj(duals, s, y_sol)
+                        if obj_val > theta_val[s]:
+                            self.add_optimality_cut(mod, duals, s)
+                            self.num_cuts_mip_ml[s] += 1
+            else:
+                self._handle_fallback(mod, unselected, y_sol, theta_val, dual_cache)
 
 
     def __call__(self, mod, where):

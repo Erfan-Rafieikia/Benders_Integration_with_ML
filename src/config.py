@@ -7,7 +7,7 @@ RESULTS_ROOT = r"G:\My Drive\Programming\Research Projects\Benders_Integration_w
 
 # ========== Problem Classes and Instances ==========
 problem_classes_to_instances = {
-    "UFL": ["MO0", "MO1"],
+    "UFL": ["MO0"],
     "HUB": [],
     "CMND": [],
     "MCFL": [],

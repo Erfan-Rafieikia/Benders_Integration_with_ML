@@ -23,16 +23,24 @@ def _set_params(mod: Model): # sets Gurobi solver parameters for the optimizatio
     mod.Params.LazyConstraints = 1 # Enable lazy constraints. These constraints are not added to the model up front, but are instead added dynamically during the branch-and-bound process (typically via a callback).
     # mod.Params.TimeLimit = 60.0
 
+    
 def solve_master_problem(problem_type, data, selected_subproblems, feature_vectors,
                          n_neighbors,
                          prediction_method='KNN',
-                         use_prediction=True):
+                         use_prediction=True,
+                         n_trials=5,
+                         feature_params=None,
+                         n_selected_subproblems=None):
+    
     if problem_type.upper() == "UFL":
         with Model("UFL_Master") as mod:
             _set_params(mod)
 
             first_stage_values = mod.addVars(data.F, vtype=GRB.BINARY, name="y")
             theta_vars = mod.addVars(data.S, name="theta")
+
+            #Activate at least one facility
+            mod.addConstr(quicksum(first_stage_values[j] for j in data.F) >= 1, name="AtLeastOneFacility")
 
             total_cost = quicksum(data.f[j] * first_stage_values[j] for j in data.F) + \
                          quicksum(theta_vars[s] for s in data.S)
@@ -41,17 +49,23 @@ def solve_master_problem(problem_type, data, selected_subproblems, feature_vecto
             #mod.addConstr(
             #    quicksum(data.u[j] * first_stage_values[j] for j in data.F) >= data.total_demand,
             #    name="Feasibility"
-            #)  # This constraint ensures that the total demand served by the facilities meets the overall demand. This is not required in uncapcitated UFL which we study given that only in that case, it can decomposed by customers
+            #)  # This constraint ensures that the total demand served by the facilities meets the overall demand. This is not required in uncapcitated UFL which we study given that only in that case, it can decomposed by customer
+            print(10*"***","callback is being started",10*"***")
+            callback = Callback(
+                problem_type=problem_type,
+                data=data,
+                first_stage_values=first_stage_values,
+                theta_vars=theta_vars,
+                selected_subproblems=selected_subproblems,
+                feature_vectors=feature_vectors,
+                prediction_method=prediction_method,
+                n_neighbors=n_neighbors,
+                use_prediction=use_prediction,
+                n_trials=n_trials,
+                feature_params=feature_params,
+                n_selected_subproblems=n_selected_subproblems
+            )
 
-            callback = Callback(problem_type=problem_type,
-                                data=data,
-                                first_stage_values=first_stage_values,
-                                theta_vars=theta_vars,
-                                selected_subproblems=selected_subproblems,
-                                feature_vectors=feature_vectors,
-                                prediction_method=prediction_method,
-                                n_neighbors=n_neighbors,
-                                use_prediction=use_prediction)
 
             if WRITE_MP_LP: # Write the master problem to a .lp file if True
                 mod.write(f"{mod.ModelName}.lp")
